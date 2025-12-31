@@ -11,6 +11,8 @@
     
     <script src="https://unpkg.com/lucide@latest"></script>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -126,33 +128,51 @@
                 </div>
 
                 <div id="resultArea" class="hidden mt-8 animate-fade-in">
-                    <div class="relative overflow-hidden rounded-xl border border-slate-700 bg-slate-800/80 p-1">
+                    
+                    <div id="captureArea" class="relative overflow-hidden rounded-xl border border-slate-700 bg-slate-900 p-1">
                         <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500"></div>
-                        <div class="p-6 md:p-8">
-                            <div class="flex items-center gap-3 mb-6">
-                                <div class="p-2 bg-blue-500/10 rounded-lg text-blue-400">
-                                    <i data-lucide="file-check" class="w-6 h-6"></i>
+                        
+                        <div class="p-6 md:p-8 bg-slate-800/80">
+                            <div class="flex items-center justify-between mb-6 border-b border-slate-700 pb-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="p-2 bg-blue-500/10 rounded-lg text-blue-400">
+                                        <i data-lucide="file-check" class="w-6 h-6"></i>
+                                    </div>
+                                    <h2 class="text-xl font-bold text-white">Laporan Investigasi</h2>
                                 </div>
-                                <h2 class="text-xl font-bold text-white">Laporan Investigasi</h2>
+                                <div class="text-right">
+                                    <h3 class="text-lg font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">TruthLens AI</h3>
+                                    <p class="text-[10px] text-slate-500 uppercase tracking-widest">Fact Check Report</p>
+                                </div>
                             </div>
                             
                             <div id="resultContent" class="text-slate-300 leading-relaxed font-sans space-y-4"></div>
-
-                            <div class="mt-8 flex justify-end">
-                                <button onclick="resetUI()" class="text-sm text-slate-400 hover:text-white flex items-center gap-2 transition-colors">
-                                    <i data-lucide="refresh-cw" class="w-4 h-4"></i>
-                                    Analisis Kasus Baru
-                                </button>
+                            
+                            <div class="mt-8 pt-4 border-t border-slate-700/50 text-center">
+                                <p class="text-xs text-slate-500">Diverifikasi secara otomatis oleh AI • Cek kebenaran di TruthLens</p>
                             </div>
                         </div>
                     </div>
+
+                    <div class="mt-6 flex flex-col md:flex-row gap-3 justify-end">
+                        <button onclick="downloadImage()" class="flex-1 md:flex-none text-white bg-green-600 hover:bg-green-500 px-5 py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all shadow-lg shadow-green-900/20">
+                            <i data-lucide="download" class="w-4 h-4"></i>
+                            Download / Share Gambar
+                        </button>
+                        
+                        <button onclick="resetUI()" class="flex-1 md:flex-none text-slate-300 bg-slate-700 hover:bg-slate-600 px-5 py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all">
+                            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                            Analisis Kasus Baru
+                        </button>
+                    </div>
+
                 </div>
 
             </div>
         </div>
 
         <footer class="mt-12 text-slate-500 text-sm">
-            &copy; 2024 Hoax Buster AI. Created for Educational Purpose.
+            &copy; 2025 TruthLens AI. Created for Educational Purpose.
         </footer>
     </div>
 
@@ -187,7 +207,6 @@
                 const data = await response.json();
 
                 if (data.status === 'success') {
-                    // Tampilkan Logs
                     for (let log of data.logs) {
                         const div = document.createElement('div');
                         div.className = "text-slate-400 mb-1";
@@ -197,9 +216,7 @@
                         await new Promise(r => setTimeout(r, 400));
                     }
 
-                    // Render HTML langsung (karena Writer Node sudah membuat HTML bagus)
                     resultContent.innerHTML = data.final_answer;
-                    
                     loadingArea.classList.add('hidden');
                     resultArea.classList.remove('hidden');
                 } else {
@@ -214,6 +231,38 @@
                 btn.innerHTML = `<i data-lucide="sparkles" class="w-5 h-5"></i> Mulai Investigasi`;
                 lucide.createIcons();
             }
+        }
+
+        // --- FUNGSI DOWNLOAD GAMBAR ---
+        function downloadImage() {
+            const captureElement = document.getElementById('captureArea');
+            const btn = event.currentTarget;
+            const originalText = btn.innerHTML;
+            
+            btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Menyimpan...`;
+            lucide.createIcons();
+
+            html2canvas(captureElement, {
+                backgroundColor: "#0f172a", // Warna background diset manual agar tidak transparan/hitam
+                scale: 2, // Resolusi tinggi (Retina)
+                logging: false,
+                useCORS: true // Penting jika ada gambar eksternal
+            }).then(canvas => {
+                // Membuat link download palsu
+                const link = document.createElement('a');
+                link.download = 'TruthLens-Investigation-' + Date.now() + '.jpg';
+                link.href = canvas.toDataURL('image/jpeg', 0.9);
+                link.click();
+
+                // Kembalikan tombol ke semula
+                btn.innerHTML = originalText;
+                lucide.createIcons();
+            }).catch(err => {
+                console.error("Gagal screenshot:", err);
+                alert("Gagal menyimpan gambar.");
+                btn.innerHTML = originalText;
+                lucide.createIcons();
+            });
         }
 
         function resetUI() {
