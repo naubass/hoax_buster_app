@@ -1,8 +1,8 @@
 import operator
 import json
-import os
-from typing import Annotated, List, TypedDict
-from fastapi import FastAPI, HTTPException
+import base64
+from typing import Annotated, List, TypedDict, Optional
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Load Environment Variables
 load_dotenv()
 
-app = FastAPI(title="Hoax Buster AI Agent")
+app = FastAPI(title="Hoax Buster AI Agent - Multimodal")
 
 # CORS Setup
 app.add_middleware(
@@ -29,22 +29,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Model Setup
+# model LLama untuk query teks
 model = ChatGroq(
     model="llama-3.3-70b-versatile",
     temperature=0
 )
 
-# Menggunakan APIWrapper agar bisa mengambil URL dan Snippet secara terpisah
+# model LLama untuk query gambar
+vision_model = ChatGroq(
+    model="meta-llama/llama-4-scout-17b-16e-instruct", 
+    temperature=0
+)
+
+# DuckDuckGo Search
 ddg_wrapper = DuckDuckGoSearchAPIWrapper(max_results=5)
 
 @tool 
 def cari_berita_terkini(query: str):
-    """
-    Gunakan tool ini untuk mencari berita. 
-    Mengembalikan data JSON berisi Judul, Snippet, dan Link asli.
-    """
-    # Mengambil hasil terstruktur (list of dict)
+    """Mencari berita terkini. Mengembalikan JSON berisi Judul, Snippet, dan Link."""
     try:
         results = ddg_wrapper.results(query, max_results=5)
         return json.dumps(results) 
@@ -55,56 +57,88 @@ tools = [cari_berita_terkini]
 
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
+    image_data: Optional[str] # Field baru untuk gambar
     analysis: str
     final_answer: str
     steps_log: Annotated[List[str], operator.add]
 
+def vision_node(state: AgentState):
+    image_data = state.get("image_data")
+    
+    # Jika tidak ada gambar, langsung lanjut ke node berikutnya
+    if not image_data:
+        return {"steps_log": []}
+
+    message = HumanMessage(
+        content=[
+            {"type": "text", "text": "Tugasmu adalah mengekstrak SEMUA teks yang ada di dalam gambar ini. Jangan tambahkan opini, hanya ekstrak teksnya apa adanya."},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_data}"
+                },
+            },
+        ]
+    )
+    
+    # Invoke model vision
+    response = vision_model.invoke([message])
+    extracted_text = response.content
+
+    new_query = f"Analisis klaim berikut yang diekstrak dari gambar: '{extracted_text}'"
+    
+    return {
+        "messages": [HumanMessage(content=new_query)], 
+        "steps_log": ["👁️‍🗨️ AI Vision selesai membaca teks dalam gambar..."]
+    }
+
+
 def researcher_node(state: AgentState):
     researcher_llm = model.bind_tools(tools)
+    last_message_content = state["messages"][-1].content
+    
     sys_msg = SystemMessage(
-        content="""Kamu adalah Peneliti Senior. 
-        Tugasmu adalah mencari fakta keras (hard facts) dan sumber link terpercaya.
+        content=f"""Kamu adalah Peneliti Senior. Tugasmu mencari fakta keras untuk memverifikasi klaim ini: "{last_message_content}".
         Gunakan tool pencarian untuk mendapatkan data terbaru."""
     )
-    messages = [sys_msg] + state["messages"]
-    response = researcher_llm.invoke(messages)
+    # Kita reset messages context untuk researcher agar fokus pada query terakhir
+    response = researcher_llm.invoke([sys_msg, HumanMessage(content=last_message_content)])
     return {"messages": [response], "steps_log": ["🕵️ Researcher sedang mengumpulkan bukti digital..."]}
 
 def analyst_node(state: AgentState):
-    messages = state["messages"]
-    sys_msg = """Kamu adalah Verifikator Fakta (Fact Checker) yang kritis.
+    tool_output = "Tidak ada data."
+    for msg in reversed(state["messages"]):
+        if msg.type == "tool":
+            tool_output = msg.content
+            break
+            
+    sys_msg = f"""Kamu adalah Verifikator Fakta Kritis.
+    Data Pencarian: {tool_output}
     
-    Tugasmu:
-    1. Analisis hasil pencarian dari researcher.
-    2. Tentukan status: BENAR (FACT), SALAH (HOAX), atau MENYESATKAN (MISLEADING).
-    3. Tentukan **Confidence Score (0-100)** berdasarkan kualitas bukti.
-       - 90-100: Bukti sangat kuat & banyak sumber mainstream.
-       - 50-89: Ada bukti tapi konteks perlu diperjelas.
-       - 0-49: Tidak ada bukti valid / sumber abal-abal.
-    4. Jelaskan alasan logismu.
+    Tugas:
+    1. Tentukan status: BENAR (FACT), SALAH (HOAX), atau MENYESATKAN (MISLEADING).
+    2. Tentukan Confidence Score (0-100).
+    3. Jelaskan alasan logismu berdasarkan data.
     """
-    analysis_prompt = [SystemMessage(content=sys_msg)] + messages
-    response = model.invoke(analysis_prompt)
+    response = model.invoke([SystemMessage(content=sys_msg)])
     return {"analysis": response.content, "steps_log": ["⚖️ Menganalisis kredibilitas & menghitung skor..."]}
 
 def writer_node(state: AgentState):
     analysis_content = state["analysis"]
     original_question = state["messages"][0].content
-    
-    # Mencari data JSON dari tool message terakhir untuk diambil link-nya
+
     search_data_context = "Data tidak ditemukan."
     for msg in reversed(state["messages"]):
         if msg.type == "tool":
             search_data_context = msg.content
             break
 
+    # Kita berikan template HTML yang SPESIFIK agar bar persentase muncul
     sys_msg = f"""
-    Kamu adalah Editor Berita AI & Frontend Developer.
-    Tugasmu menyajikan laporan akhir dalam format **HTML MURNI** (tanpa Markdown ```html).
+    Kamu adalah Frontend Developer expert. Tugasmu render laporan dalam **HTML MURNI**.
     
-    Pertanyaan User: {original_question}
-    Analisis Verifikator: {analysis_content}
-    Data Pencarian Mentah (JSON): {search_data_context}
+    Analisis: {analysis_content}
+    Data JSON: {search_data_context}
 
     Instruksi Output HTML (Gunakan Tailwind CSS):
     
@@ -146,9 +180,8 @@ def writer_node(state: AgentState):
 
     HANYA KEMBALIKAN KODE HTML DI DALAM TAG DIV. JANGAN ADA TEKS LAIN.
     """
-    
     response = model.invoke([SystemMessage(content=sys_msg)])
-    return {"final_answer": response.content, "messages": [response], "steps_log": ["✍️ Menyusun laporan akhir & daftar pustaka..."]}
+    return {"final_answer": response.content, "messages": [response], "steps_log": ["✍️ Menyusun laporan akhir..."]}
 
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
@@ -156,14 +189,19 @@ def should_continue(state: AgentState):
         return "tools"
     return "analyst"
 
+# Graph Setup
 workflow = StateGraph(AgentState)
 
+# Tambahkan node
+workflow.add_node("vision", vision_node)
 workflow.add_node("researcher", researcher_node)
 workflow.add_node("tools", ToolNode(tools))
 workflow.add_node("analyst", analyst_node)
 workflow.add_node("writer", writer_node)
 
-workflow.add_edge(START, "researcher")
+# Alur: START -> vision -> researcher -> ...
+workflow.add_edge(START, "vision")
+workflow.add_edge("vision", "researcher") 
 workflow.add_conditional_edges("researcher", should_continue, {"tools": "tools", "analyst": "analyst"})
 workflow.add_edge("tools", "analyst")
 workflow.add_edge("analyst", "writer")
@@ -171,14 +209,38 @@ workflow.add_edge("writer", END)
 
 graph = workflow.compile()
 
-class QueryRequest(BaseModel):
-    question: str
-
+# Endpoint baru menerima Form Data (teks dan/atau file)
 @app.post("/analyze")
-async def analyze_claim(req: QueryRequest):
+async def analyze_claim(
+    question: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None)
+):
     try:
-        inputs = {"messages": [HumanMessage(content=req.question)], "steps_log": []}
+        image_base64 = None
+        initial_message = ""
+
+        # Proses Gambar jika ada
+        if image:
+            print(f"Menerima gambar: {image.filename}")
+            contents = await image.read()
+            image_base64 = base64.b64encode(contents).decode('utf-8')
+            initial_message = "Analisis gambar yang diupload."
+        
+        # Proses Teks jika ada
+        elif question:
+             initial_message = question
+        
+        else:
+             raise HTTPException(status_code=400, detail= "Harus mengirim teks atau gambar.")
+
+        inputs = {
+            "messages": [HumanMessage(content=initial_message)], 
+            "image_data": image_base64, 
+            "steps_log": []
+        }
+
         result = await graph.ainvoke(inputs)
+        
         return {
             "status": "success",
             "logs": result.get("steps_log", []),
@@ -188,7 +250,6 @@ async def analyze_claim(req: QueryRequest):
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Mount folder static agar index.html bisa diakses langsung
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":
