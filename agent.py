@@ -92,7 +92,6 @@ def vision_node(state: AgentState):
         "steps_log": ["👁️‍🗨️ AI Vision selesai membaca teks dalam gambar..."]
     }
 
-
 def researcher_node(state: AgentState):
     researcher_llm = model.bind_tools(tools)
     last_message_content = state["messages"][-1].content
@@ -125,7 +124,11 @@ def analyst_node(state: AgentState):
 
 def writer_node(state: AgentState):
     analysis_content = state["analysis"]
+    # Mengambil pertanyaan asli
     original_question = state["messages"][0].content
+    
+    # Cek apakah ada data gambar di state (untuk memberi tahu Writer)
+    has_image = "Ya" if state.get("image_data") else "Tidak"
 
     search_data_context = "Data tidak ditemukan."
     for msg in reversed(state["messages"]):
@@ -133,21 +136,23 @@ def writer_node(state: AgentState):
             search_data_context = msg.content
             break
 
-    # Kita berikan template HTML yang SPESIFIK agar bar persentase muncul
+    # MODIFIKASI PROMPT DI SINI
     sys_msg = f"""
-    Kamu adalah Frontend Developer expert. Tugasmu render laporan dalam **HTML MURNI**.
+    Kamu adalah Frontend Developer expert & Editor Berita AI. 
+    Tugasmu render laporan investigasi dalam **HTML MURNI** (tanpa Markdown).
     
-    Analisis: {analysis_content}
-    Data JSON: {search_data_context}
+    Data Input:
+    - Klaim User: {original_question}
+    - Ada Upload Gambar?: {has_image}
+    - Analisis Verifikator: {analysis_content}
+    - Data Search (JSON): {search_data_context}
 
     Instruksi Output HTML (Gunakan Tailwind CSS):
     
     1. **Header Status**: 
-       Buat badge besar. Jika HOAX pakai bg-red-500, FAKTA bg-green-500, MISLEADING bg-yellow-500.
+       Badge besar. Jika HOAX pakai bg-red-600, FAKTA bg-green-600, MISLEADING bg-yellow-600.
     
     2. **Confidence Score Bar**:
-       Analisis skor dari verifikator. Buat Progress Bar.
-       Format:
        <div class="mb-6 p-4 bg-slate-900/50 rounded-lg border border-slate-700">
          <div class="flex justify-between text-sm text-slate-300 mb-2 font-mono">
            <span>TINGKAT KEPERCAYAAN AI</span>
@@ -158,12 +163,22 @@ def writer_node(state: AgentState):
          </div>
        </div>
 
-    3. **Penjelasan Singkat**: 
-       Tulis rangkuman analisis yang mudah dibaca warga +62. Gunakan paragraf singkat.
-
-    4. **Sumber Referensi (Wajib Valid)**:
-       Ambil dari 'link' dan 'title' di Data Pencarian Mentah.
+    3. **Analisis Visual (KHUSUS JIKA ADA GAMBAR)**:
+       Jika input melibatkan gambar/screenshot, buat kotak khusus berwarna biru muda/indigo transparan.
+       Isinya: Ringkasan apa yang terbaca di gambar (OCR) dan apakah gambar itu editan atau asli.
        Format:
+       <div class="mb-6 p-4 bg-blue-900/20 rounded-lg border border-blue-800/50 flex gap-3">
+         <div class="text-blue-400 mt-1"><i data-lucide="image" class="w-5 h-5"></i></div>
+         <div>
+            <h4 class="text-sm font-bold text-blue-300 mb-1">Bukti Visual / Screenshot</h4>
+            <p class="text-sm text-slate-300">[HASIL ANALISIS GAMBAR DISINI]</p>
+         </div>
+       </div>
+
+    4. **Penjelasan Singkat**: 
+       Rangkuman analisis fakta yang mudah dibaca.
+
+    5. **Sumber Referensi**:
        <div class="mt-6 border-t border-slate-700 pt-4">
          <h4 class="text-sm font-semibold text-slate-400 mb-3 flex items-center gap-2">
             🔗 Sumber Terverifikasi
@@ -178,10 +193,11 @@ def writer_node(state: AgentState):
          </ul>
        </div>
 
-    HANYA KEMBALIKAN KODE HTML DI DALAM TAG DIV. JANGAN ADA TEKS LAIN.
+    HANYA KEMBALIKAN KODE HTML DI DALAM TAG DIV.
     """
+    
     response = model.invoke([SystemMessage(content=sys_msg)])
-    return {"final_answer": response.content, "messages": [response], "steps_log": ["✍️ Menyusun laporan akhir..."]}
+    return {"final_answer": response.content, "messages": [response], "steps_log": ["✍️ Menyusun laporan akhir & visual evidence..."]}
 
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
